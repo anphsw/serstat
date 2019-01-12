@@ -2,6 +2,7 @@
 Small utility to get some GPON module statistics from Broadcom-based ONU using /proc/tc_monitor and broadcom proprietary library.
 Tested on BCM68380 board + snmpd.
 You will also need libgponctl.so found on any such ONU.
+I2C access via libi2cctl.so also supported.
 
 # note:
 CC path is hardcoded in makefile.

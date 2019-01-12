@@ -11,6 +11,12 @@
 
 int main(int argc, char ** argv) {
 
+    float rxpower = -INFINITY, txpower = -INFINITY, videopower = -INFINITY, temperature = -INFINITY, vcc = -INFINITY, bias = -INFINITY;
+
+    int onuid_ret = -1, onuid = -1, state_ret = -1, ostate = -1, astate = -1;
+    uint8_t state[2] = {0};
+
+#ifndef USE_I2C
     static int bufsize=256;
 
     FILE* proc_file = fopen("/proc/tc_monitor","r");
@@ -20,10 +26,7 @@ int main(int argc, char ** argv) {
     }
 
     int rxpower_raw = 0, txpower_raw = 0, videopower_raw = 0, temperature_raw = 0, vcc_raw = 0, bias_raw = 0, genericvalue = 0;
-    int onuid_ret = -1, onuid = -1, state_ret = -1, ostate = -1, astate = -1;
-    uint8_t state[2] = {0};
 
-    float rxpower = 0, txpower = 0, videopower = 0, temperature = 0, vcc = 0, bias = 0;
     char *genericstring = malloc(bufsize);
 
     char *contents = malloc(bufsize);
@@ -63,29 +66,64 @@ int main(int argc, char ** argv) {
     temperature = (((float)temperature_raw / 100) - 32) * 5 / 9; // farenheit to celsius
     vcc = (float)vcc_raw / 10000;
     bias = (float)bias_raw / 10000;
+#else
+    void *i2cctl_handle = dlopen("libi2cctl.so", RTLD_LAZY);	// load proprietary broadcom library TODO: access i2c directly
+    if (!i2cctl_handle) {
+        /* fail to load the library */
+        fprintf(stderr, "dlopen error: %s\n", dlerror());
+        goto no_libi2cctl;
+    }
 
-    void *handle = dlopen("libgponctl.so", RTLD_LAZY);	// load proprietary broadcom library
-    if (!handle) {
+    float (*i2cCtl_getRxPower)();
+    float (*i2cCtl_getTxPower)();
+    float (*i2cCtl_getVideoInput)();
+    float (*i2cCtl_getTemperature)();
+    float (*i2cCtl_getSupplyVoltage)();
+    float (*i2cCtl_getTxBias)();
+
+    *(void**)(&i2cCtl_getRxPower)	= dlsym(i2cctl_handle, "i2cCtl_getRxPower");
+    *(void**)(&i2cCtl_getTxPower)	= dlsym(i2cctl_handle, "i2cCtl_getTxPower");
+    *(void**)(&i2cCtl_getVideoInput)	= dlsym(i2cctl_handle, "i2cCtl_getVideoInput");
+    *(void**)(&i2cCtl_getTemperature)	= dlsym(i2cctl_handle, "i2cCtl_getTemperature");
+    *(void**)(&i2cCtl_getSupplyVoltage)	= dlsym(i2cctl_handle, "i2cCtl_getSupplyVoltage");
+    *(void**)(&i2cCtl_getTxBias)	= dlsym(i2cctl_handle, "i2cCtl_getTxBias");
+
+    if (i2cCtl_getRxPower)		rxpower = i2cCtl_getRxPower();
+    if (i2cCtl_getTxPower)		txpower = i2cCtl_getTxPower();
+    if (i2cCtl_getVideoInput)		videopower = i2cCtl_getVideoInput();
+    if (i2cCtl_getTemperature)		temperature = i2cCtl_getTemperature();
+    if (i2cCtl_getSupplyVoltage)	vcc = i2cCtl_getSupplyVoltage();
+    if (i2cCtl_getTxBias)		bias = i2cCtl_getTxBias();
+
+    dlclose(i2cctl_handle);
+    no_libi2cctl:;
+#endif
+
+    void *gponctl_handle = dlopen("libgponctl.so", RTLD_LAZY);	// load proprietary broadcom library
+    if (!gponctl_handle) {
         /* fail to load the library */
         fprintf(stderr, "dlopen error: %s\n", dlerror());
         goto print;
     }
+
     int (*gponCtl_getOnuId)(int*);
-    *(void**)(&gponCtl_getOnuId) = dlsym(handle, "gponCtl_getOnuId");
+    int (*gponCtl_getControlStates)(void*);
+
+    *(void**)(&gponCtl_getOnuId)		= dlsym(gponctl_handle, "gponCtl_getOnuId");
+    *(void**)(&gponCtl_getControlStates)	= dlsym(gponctl_handle, "gponCtl_getControlStates");
+
     if (!gponCtl_getOnuId) {
 	onuid = -1;
     } else {
-	onuid_ret = gponCtl_getOnuId(&onuid);		// TODO: access /dev/bcm_ploam directly
+	onuid_ret = gponCtl_getOnuId(&onuid);		// TODO: ioctl 0x83 /dev/bcm_ploam directly
 	if (onuid_ret > 0) onuid = -1;
     }
 
-    int (*gponCtl_getControlStates)(void*);
-    *(void**)(&gponCtl_getControlStates) = dlsym(handle, "gponCtl_getControlStates");
     if (!gponCtl_getControlStates) {
 	astate = -1;
 	ostate = -1;
     } else {
-	state_ret = gponCtl_getControlStates(&state);	// TODO: access /dev/bcm_ploam directly
+	state_ret = gponCtl_getControlStates(&state);	// TODO: ioctl 0x6f /dev/bcm_ploam directly
 	if (state_ret > 0) {
 	    astate = -1;
 	    ostate = -1;
@@ -95,23 +133,25 @@ int main(int argc, char ** argv) {
 	}
     }
 
-    dlclose(handle);
+    dlclose(gponctl_handle);
 
     print:
     if (argc > 1) {
-	printf ("vcc: %.2f\nbias: %.2f\ntemperature: %.2f\nrxpower: %.2f\ntxpower: %.2f\nvideopower: %.2f\nonuid: %d\nostate: %d\n",
-		vcc, bias, temperature, rxpower, txpower, videopower, onuid, ostate);
+	printf ("vcc: %.2f\nbias: %.2f\ntemperature: %.2f\nrxpower: %.2f\ntxpower: %.2f\nvideopower: %.2f\nonuid: %d\nostate: %d\nastate: %d\n",
+		vcc, bias, temperature, rxpower, txpower, videopower, onuid, ostate, astate);
     } else {
-	printf ("%.2f\n%.2f\n%.2f\n%.2f\n%.2f\n%.2f\n%d\n%d\n",
-		vcc, bias, temperature, rxpower, txpower, videopower, onuid, ostate);
+	printf ("%.2f\n%.2f\n%.2f\n%.2f\n%.2f\n%.2f\n%d\n%d\n%d\n",
+		vcc, bias, temperature, rxpower, txpower, videopower, onuid, ostate, astate);
     }
 
+#ifndef USE_I2C
     free(genericstring);
     free(contents);
     free(stringbuf);
     free(multibuf);
 
     fclose (proc_file);
+#endif
 
     return 0;
 }
