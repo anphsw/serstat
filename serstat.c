@@ -9,11 +9,17 @@
 #include <math.h>
 #include <dlfcn.h>
 
+#include <sys/ioctl.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+
 int main(int argc, char ** argv) {
 
     float rxpower = -INFINITY, txpower = -INFINITY, videopower = -INFINITY, temperature = -INFINITY, vcc = -INFINITY, bias = -INFINITY;
 
-    int onuid_ret = -1, onuid = -1, state_ret = -1, ostate = -1, astate = -1;
+    int ploam_fd, onuid = -1, ostate = -1, astate = -1;
     uint8_t state[2] = {0};
 
 #ifndef USE_I2C
@@ -21,7 +27,7 @@ int main(int argc, char ** argv) {
 
     FILE* proc_file = fopen("/proc/tc_monitor","r");
     if (proc_file == 0) {
-        perror("Cannot open file for read");
+        perror("/proc/tc_monitor read failed");
         return 1;
     }
 
@@ -99,41 +105,26 @@ int main(int argc, char ** argv) {
     no_libi2cctl:;
 #endif
 
-    void *gponctl_handle = dlopen("libgponctl.so", RTLD_LAZY);	// load proprietary broadcom library
-    if (!gponctl_handle) {
-        /* fail to load the library */
-        fprintf(stderr, "dlopen error: %s\n", dlerror());
+    ploam_fd = open("/dev/bcm_ploam", O_RDWR);
+    if (ploam_fd == -1) {
+        fprintf(stderr, "open /dev/bcm_ploam failed");
         goto print;
     }
 
-    int (*gponCtl_getOnuId)(int*);
-    int (*gponCtl_getControlStates)(void*);
-
-    *(void**)(&gponCtl_getOnuId)		= dlsym(gponctl_handle, "gponCtl_getOnuId");
-    *(void**)(&gponCtl_getControlStates)	= dlsym(gponctl_handle, "gponCtl_getControlStates");
-
-    if (!gponCtl_getOnuId) {
-	onuid = -1;
-    } else {
-	onuid_ret = gponCtl_getOnuId(&onuid);		// TODO: ioctl 0x83 /dev/bcm_ploam directly
-	if (onuid_ret > 0) onuid = -1;
+    if (ioctl(ploam_fd, 0x83, &onuid)) { // 0x83 - get onu id
+            fprintf(stderr, "ioctl 0x83 failed\n");
+	    onuid = -1;
     }
 
-    if (!gponCtl_getControlStates) {
-	astate = -1;
-	ostate = -1;
-    } else {
-	state_ret = gponCtl_getControlStates(&state);	// TODO: ioctl 0x6f /dev/bcm_ploam directly
-	if (state_ret > 0) {
+    if (ioctl(ploam_fd, 0x6f, &state)) { // 0x6f - get control states structure
+            fprintf(stderr, "ioctl 0x6f failed\n");
 	    astate = -1;
 	    ostate = -1;
-	} else {
+    } else {
 	    astate = state[0]; // administrative state
 	    ostate = state[1]; // operational state
-	}
     }
-
-    dlclose(gponctl_handle);
+    close(ploam_fd);
 
     print:
     if (argc > 1) {
