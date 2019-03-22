@@ -19,19 +19,22 @@ int main(int argc, char ** argv) {
 
     float rxpower = -INFINITY, txpower = -INFINITY, videopower = -INFINITY, temperature = -INFINITY, vcc = -INFINITY, bias = -INFINITY;
 
-    int ploam_fd, onuid = -1, ostate = -1, astate = -1;
+    int onuid = -1, ostate = -1, astate = -1;
     uint8_t state[2] = {0};
 
-#ifndef USE_I2C
+#if defined(USE_TCMONITOR) || defined(USE_LASERDEV)
+    int rxpower_raw = 0, txpower_raw = 0, videopower_raw = 0, temperature_raw = 0, vcc_raw = 0, bias_raw = 0;
+#endif
+
+#if defined(USE_TCMONITOR)
     static int bufsize=256;
+    int genericvalue = 0;
 
     FILE* proc_file = fopen("/proc/tc_monitor","r");
     if (proc_file == 0) {
         perror("/proc/tc_monitor read failed");
         return 1;
     }
-
-    int rxpower_raw = 0, txpower_raw = 0, videopower_raw = 0, temperature_raw = 0, vcc_raw = 0, bias_raw = 0, genericvalue = 0;
 
     char *genericstring = malloc(bufsize);
 
@@ -65,14 +68,49 @@ int main(int argc, char ** argv) {
 	    if	(!strcasecmp("bias", genericstring))		bias_raw = genericvalue;
 	}
     }
+#endif
 
+#if defined(USE_LASERDEV)
+    int laserdev_fd = open("/dev/laser_dev", O_RDWR);
+    if (laserdev_fd == -1) {
+        fprintf(stderr, "open /dev/laser_dev failed");
+        return 1;
+    }
+    if (ioctl(laserdev_fd, 0x40024f05, &rxpower_raw)) {		//0x40024f05 - rxpower
+            fprintf(stderr, "rxpower ioctl failed\n");
+	    temperature_raw = -1;
+    }
+    if (ioctl(laserdev_fd, 0x40024f06, &txpower_raw)) {		//0x40024f06 - txpower
+            fprintf(stderr, "txpower ioctl failed\n");
+	    temperature_raw = -1;
+    }
+    if (ioctl(laserdev_fd, 0x40024f08, &temperature_raw)) {	//0x40024f08 - temperature
+            fprintf(stderr, "temperature ioctl failed\n");
+	    temperature_raw = -1;
+    }
+
+    if (ioctl(laserdev_fd, 0x40024f09, &vcc_raw)) {		//0x40024f09 - vcc
+            fprintf(stderr, "vcc ioctl failed\n");
+	    vcc_raw = -1;
+    }
+
+    if (ioctl(laserdev_fd, 0x40024f0a, &bias_raw)) {		//0x40024f0a - bias
+            fprintf(stderr, "bias ioctl failed\n");
+	    vcc_raw = -1;
+    }
+    close(laserdev_fd);
+#endif
+
+#if defined(USE_TCMONITOR) || defined(USE_LASERDEV)
     rxpower = 10 * log10((float)rxpower_raw / 10000) / log10(10); // mW to dbm
     txpower = 10 * log10((float)txpower_raw / 10000) / log10(10);
     videopower = 10 * log10((float)videopower_raw / 10000) / log10(10);
     temperature = (((float)temperature_raw / 100) - 32) * 5 / 9; // farenheit to celsius
     vcc = (float)vcc_raw / 10000;
     bias = (float)bias_raw / 10000;
-#else
+#endif
+
+#if defined(USE_I2C)
     void *i2cctl_handle = dlopen("libi2cctl.so", RTLD_LAZY);	// load proprietary broadcom library TODO: access i2c directly
     if (!i2cctl_handle) {
         /* fail to load the library */
@@ -105,7 +143,7 @@ int main(int argc, char ** argv) {
     no_libi2cctl:;
 #endif
 
-    ploam_fd = open("/dev/bcm_ploam", O_RDWR);
+    int ploam_fd = open("/dev/bcm_ploam", O_RDWR);
     if (ploam_fd == -1) {
         fprintf(stderr, "open /dev/bcm_ploam failed");
         goto print;
@@ -113,6 +151,9 @@ int main(int argc, char ** argv) {
 
     if (ioctl(ploam_fd, 0x83, &onuid)) { // 0x83 - get onu id
             fprintf(stderr, "ioctl 0x83 failed\n");
+	    onuid = -1;
+    } else if (onuid < 0 || onuid > 255) {
+            fprintf(stderr, "ioctl 0x83 returned invalid value\n");
 	    onuid = -1;
     }
 
@@ -135,7 +176,7 @@ int main(int argc, char ** argv) {
 		vcc, bias, temperature, rxpower, txpower, videopower, onuid, ostate, astate);
     }
 
-#ifndef USE_I2C
+#if defined(USE_TCMONITOR)
     free(genericstring);
     free(contents);
     free(stringbuf);
